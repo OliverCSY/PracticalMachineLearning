@@ -1,0 +1,162 @@
+---
+title: "Practical Machine Learning"
+author: "Shanyun Chu"
+date: "6 July 2016"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement - a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data  They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. 
+
+In the report, we make full use of the data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants, and develop machine learning algorithms to identify the ways they perform lifts correctly and incorrectly in five differenct ways.
+
+## Loading the Dataset
+
+The required datasets are loaded from local working directories.
+
+```{r cache=TRUE}
+setwd('D:/My Documents/data')
+pml_training <- read.csv(file = 'pml-training.csv',sep=',',stringsAsFactors = FALSE)
+pml_testing <- read.csv(file = 'pml-testing.csv',sep=',',stringsAsFactors = FALSE)
+dim(pml_training)
+dim(pml_testing)
+```
+
+We see that there are as many as 160 features, from which we would like to make selections to optimize classification performance, and minimize computation complexity in the meantime.
+
+## Loading Packages
+
+There are several packages that are necessary for model build-up, and visualization.
+
+```{r results='hide'}
+library(ggplot2); library(caret); library(kernlab); library(randomForest); library(rattle); library(gridExtra)
+```
+
+## Data preprocessing and feature selection
+
+In this section, we eliminate features with missing values or unique catatory, and from the rest select relevant features regarding part of bodies.
+
+```{r}
+isHomoFuc <- function (x) {
+    if (length(unique(x)) == 1) {
+        return(FALSE)
+    }
+    else {
+        return(TRUE)
+    }
+}
+
+```
+
+```{r cache=TRUE}
+table(pml_training$classe)
+isAnyMissing <- sapply(pml_testing, function (x) any(is.na(x) | x==""))
+isHomo <- sapply(pml_testing, isHomoFuc)
+toInclude <- !isAnyMissing & isHomo & grepl("belt|[^(fore)]arm|dumbbell|forearm", names(isAnyMissing))
+featuresCandidate <- names(isAnyMissing)[toInclude]
+pml_training <- pml_training[, c('classe',featuresCandidate)]
+names(pml_training)
+```
+
+Next, we split the training data further into subclasses of training and validation data. The subclass of training dataset is used for building the model, and the validation set is used to evaluate out-of-sample errors.
+
+```{r cache=FALSE}
+pml_training$classe <- as.factor(pml_training$classe)
+inTrain <- createDataPartition(y=pml_training$classe,p=0.7,list=FALSE)
+training <- pml_training[inTrain,]
+validation <- pml_training[-inTrain,]
+```
+
+## Model Comparison
+
+In the very beginning, we attempt the decision tree as our first trial.
+
+### Decision Tree
+
+```{r cache=TRUE} 
+set.seed(233)
+system.time(model_rpart <- train(classe ~ ., data = training, method = 'rpart'))
+model_rpart
+fancyRpartPlot(model_rpart$finalModel,cex=.5,under.cex=1,shadow.offset=0)
+```
+
+From the model, only 4 out of 52 features are used, and therefore the resulting accuracy has not reached the required standard. As such, more advanced models are in need. We try Random Forest and Stochastic Gradient Boosting, and see their pros and cons. Due to computional complexity, a sample of training set is used for initial inspection and cross validation, which are presented as follows.
+
+### Random Forest (Test)
+
+```{r cache=TRUE} 
+set.seed(233)
+fitControl <- trainControl(method = 'repeatedcv', number = 5, repeats = 5, classProbs =
+                               TRUE, savePredictions = TRUE,  allowParallel = TRUE)
+system.time(model_rf <- train(classe ~ ., data = training[sample(1:dim(training)[1],1000),], method = 'rf', trControl= fitControl, verbose = FALSE))
+model_rf
+```
+
+### Stochatic Gradient Boosting (Test)
+
+```{r cache=TRUE}
+set.seed(233)
+library(gbm)
+system.time(model_gbm <- train(classe ~ ., method = 'gbm', data = training[sample(1:dim(training)[1],1000),], verbose = FALSE, trControl = fitControl))
+model_gbm
+```
+
+Based on the above two test models, we see that their accuracy are close to each other. However, due to computational capacity, the cross validation is not included in the establishment of formal models. Next, we see the models.
+
+### Random Forest
+
+```{r cache=TRUE} 
+set.seed(233)
+system.time(model_rf1 <- train(classe ~ ., data = training, method = 'rf', verbose = FALSE,            preProcess=c('center','scale'), trControl=trainControl(classProbs = TRUE, savePredictions = TRUE,  allowParallel = TRUE)))
+model_rf1
+confusionMatrix(predict(model_rf1, newdata = validation), validation$classe)
+```
+
+It has been seen that in-sample and out-of-sample errors are both over 99%, which is fairly good performance. We further investigate importance of features.
+
+### Stochastic Gradient Boosting
+
+```{r cache=TRUE} 
+set.seed(233)
+system.time(model_gbm1 <- train(classe ~ ., data = training, method = 'gbm', verbose =
+    FALSE, preProcess=c('center','scale'), trControl=trainControl(classProbs = TRUE,
+    savePredictions = TRUE,  allowParallel = TRUE)))
+model_gbm1
+confusionMatrix(predict(model_gbm1, newdata = validation), validation$classe)
+```
+
+Stochastic gradient boosting approaches around 95% precision for both in-sample and out-of-sample cases. Especially, it takes only one out of four time to train the model, which shows a better time-efficiency trade-off. As a result, this model is also retained for our final use.
+
+In the end of this section, we take a look at how observations in the dataset are grouped based on extinguishing features identified by stochastic gradient boosting models.
+
+```{r}
+varImp(model_gbm1)
+```
+
+```{r cache = TRUE}
+q1 <- qplot(pitch_forearm, roll_belt, colour = classe, data = training)
+q2 <- qplot(roll_belt, yaw_belt, colour = classe, data = training)
+q3 <- qplot(yaw_belt, pitch_forearm, colour = classe, data = training)
+q4 <- qplot(roll_belt, pitch_belt, colour = classe, data = training)
+grid.arrange(q1, q2, q3, q4, nrow = 2, ncol = 2)
+```
+
+
+It is obvious that there are clear patterns of data clustering based on top 4 important features, which justifies our second models in an intuitive manner.
+
+## Prediction for the testing set
+
+Finally, we utilize the above two models to predict our test set.
+
+```{r}
+predict(model_rf1,newdata = pml_testing[,featuresCandidate], preProcess=c('center','scale'))
+
+predict(model_gbm1,newdata = pml_testing[,featuresCandidate], preProcess=c('center','scale'))
+```
+
+Surprizingly, the predictions with two models 100% agree with each other. This strengthen our belief of what the outcome should be.
